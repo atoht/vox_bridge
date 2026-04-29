@@ -55,6 +55,7 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const transcriptRef = useRef("");
   const currentSourceTextRef = useRef("");
+  const currentSegmentIdRef = useRef<number | null>(null);
   const entryIdRef = useRef(1);
 
   const directionValue = `${sourceLanguage}-${targetLanguage}`;
@@ -82,8 +83,8 @@ export default function App() {
     await audio.play();
   }
 
-  function rememberFinalTranslation(translated: string) {
-    const original = currentSourceTextRef.current || transcriptRef.current;
+  function rememberFinalTranslation(translated: string, sourceText?: string) {
+    const original = sourceText || currentSourceTextRef.current || transcriptRef.current;
     if (!original.trim() || !translated.trim()) {
       return;
     }
@@ -97,6 +98,7 @@ export default function App() {
       },
     ]);
     currentSourceTextRef.current = "";
+    currentSegmentIdRef.current = null;
     transcriptRef.current = "";
     setTranscript("");
     setTranslation("");
@@ -111,20 +113,37 @@ export default function App() {
     } else if (event.type === "speech.stopped") {
       setStatus("正在生成译文");
     } else if (event.type === "transcript.delta" || event.type === "transcript.done") {
+      if (event.segment_id !== undefined && event.segment_id !== currentSegmentIdRef.current) {
+        currentSegmentIdRef.current = event.segment_id;
+        currentSourceTextRef.current = event.text;
+        setTranslation("");
+        setFinalTranslation("");
+      }
       transcriptRef.current = event.text;
       setTranscript(event.text);
     } else if (event.type === "translation.reset") {
+      if (event.segment_id !== undefined && event.segment_id !== currentSegmentIdRef.current) {
+        currentSegmentIdRef.current = event.segment_id;
+        setTranslation("");
+        setFinalTranslation("");
+      }
       currentSourceTextRef.current = event.text;
     } else if (event.type === "translation.delta") {
+      if (event.segment_id !== undefined && event.segment_id !== currentSegmentIdRef.current) {
+        return;
+      }
       setTranslation(event.text);
     } else if (event.type === "translation.done") {
       if (!event.text.trim()) {
         return;
       }
+      if (event.segment_id !== undefined && event.segment_id !== currentSegmentIdRef.current) {
+        return;
+      }
       setTranslation(event.text);
       if (event.is_final) {
         setFinalTranslation(event.text);
-        rememberFinalTranslation(event.text);
+        rememberFinalTranslation(event.text, event.source_text);
         if (enableTts) {
           void playTts(event.text).catch((err: unknown) => {
             setError(err instanceof Error ? err.message : String(err));
@@ -147,6 +166,7 @@ export default function App() {
     setEntries([]);
     transcriptRef.current = "";
     currentSourceTextRef.current = "";
+    currentSegmentIdRef.current = null;
     setStatus("正在连接");
 
     const ws = new WebSocket(buildWsUrl());

@@ -101,6 +101,8 @@ async def translate_socket(websocket: WebSocket) -> None:
     latest_translation = ""
     last_started_text = ""
     last_translation_started_at = 0.0
+    last_segment_at = asyncio.get_running_loop().time()
+    committed_transcript_len = 0
     translation_task: asyncio.Task[None] | None = None
     translation_lock = asyncio.Lock()
     send_lock = asyncio.Lock()
@@ -113,7 +115,20 @@ async def translate_socket(websocket: WebSocket) -> None:
         async with send_lock:
             await websocket.send_json(payload)
 
-    async def push_translation(text: str, *, is_final: bool) -> None:
+    def should_finalize_segment(segment: str) -> bool:
+        """根据标点、长度和停顿把连续转写主动切成多张字幕卡片。"""
+
+        normalized = segment.strip()
+        if not normalized:
+            return False
+        if normalized[-1] in "。！？.!?":
+            return True
+        if len(normalized) >= 72:
+            return True
+        idle_seconds = asyncio.get_running_loop().time() - last_segment_at
+        return len(normalized) >= 22 and idle_seconds >= 2.2
+
+    async def push_translation(text: str, *, is_final: bool, segment_id: int) -> None:
         """启动一次翻译流，把 delta 持续推给前端。"""
 
         nonlocal latest_translation
@@ -122,6 +137,7 @@ async def translate_socket(websocket: WebSocket) -> None:
             await send_event(
                 {
                     "type": "translation.reset",
+                    "segment_id": segment_id,
                     "text": text,
                     "is_final": is_final,
                 }
@@ -136,6 +152,7 @@ async def translate_socket(websocket: WebSocket) -> None:
                 await send_event(
                     {
                         "type": "translation.delta",
+                        "segment_id": segment_id,
                         "delta": delta,
                         "text": accumulated,
                         "is_final": is_final,
@@ -147,6 +164,8 @@ async def translate_socket(websocket: WebSocket) -> None:
                 await send_event(
                     {
                         "type": "translation.done",
+                        "segment_id": segment_id,
+                        "source_text": text,
                         "text": accumulated,
                         "is_final": is_final,
                     }
@@ -161,7 +180,12 @@ async def translate_socket(websocket: WebSocket) -> None:
                 }
             )
 
-    async def schedule_translation(text: str, *, is_final: bool) -> None:
+    async def schedule_translation(
+        text: str,
+        *,
+        is_final: bool,
+        segment_id: int,
+    ) -> None:
         """增量转写频繁到达时做轻量节流，并取消过期翻译。"""
 
         nonlocal last_started_text, last_translation_started_at, translation_task
@@ -180,7 +204,7 @@ async def translate_socket(websocket: WebSocket) -> None:
                 with suppress(asyncio.CancelledError):
                     await translation_task
             translation_task = asyncio.create_task(
-                push_translation(text, is_final=is_final)
+                push_translation(text, is_final=is_final, segment_id=segment_id)
             )
 
     try:
@@ -216,7 +240,7 @@ async def translate_socket(websocket: WebSocket) -> None:
         async def voxtral_to_browser() -> None:
             """处理 Voxtral Realtime 转写事件，并触发翻译。"""
 
-            nonlocal latest_transcript
+            nonlocal committed_transcript_len, last_segment_at, latest_transcript
             async for event in transcribe_voxtral_stream(
                 api_key=settings.mistral_api_key,
                 model=settings.voxtral_realtime_model,
@@ -229,26 +253,50 @@ async def translate_socket(websocket: WebSocket) -> None:
                 elif event_type == "transcript.delta":
                     delta = event.get("delta", "")
                     latest_transcript += delta
+                    current_segment = latest_transcript[committed_transcript_len:].strip()
+                    segment_id = committed_transcript_len
                     await send_event(
                         {
                             "type": "transcript.delta",
                             "delta": delta,
-                            "text": latest_transcript,
+                            "segment_id": segment_id,
+                            "text": current_segment or latest_transcript,
                         }
                     )
-                    # 不等句子结束；有 delta 就尽快基于当前上下文翻译。
-                    await schedule_translation(latest_transcript, is_final=False)
+                    # 不等句子结束；只翻译当前未提交片段，避免整段历史反复覆盖。
+                    await schedule_translation(
+                        current_segment,
+                        is_final=False,
+                        segment_id=segment_id,
+                    )
+                    if should_finalize_segment(current_segment):
+                        committed_transcript_len = len(latest_transcript)
+                        last_segment_at = asyncio.get_running_loop().time()
+                        await schedule_translation(
+                            current_segment,
+                            is_final=True,
+                            segment_id=segment_id,
+                        )
                 elif event_type == "transcript.done":
-                    transcript = latest_transcript.strip()
+                    transcript = latest_transcript[committed_transcript_len:].strip()
                     if transcript:
+                        segment_id = committed_transcript_len
                         await send_event(
                             {
                                 "type": "transcript.done",
+                                "segment_id": segment_id,
                                 "text": transcript,
                             }
                         )
-                        await schedule_translation(transcript, is_final=True)
+                        committed_transcript_len = len(latest_transcript)
+                        last_segment_at = asyncio.get_running_loop().time()
+                        await schedule_translation(
+                            transcript,
+                            is_final=True,
+                            segment_id=segment_id,
+                        )
                     latest_transcript = ""
+                    committed_transcript_len = 0
                 elif event_type == "error":
                     await send_event(
                         {

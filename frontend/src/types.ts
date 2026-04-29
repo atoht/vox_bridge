@@ -10,11 +10,23 @@ export type ServerEvent =
   | { type: "ready" }
   | { type: "speech.started" }
   | { type: "speech.stopped" }
-  | { type: "transcript.delta"; delta: string; text: string }
-  | { type: "transcript.done"; text: string }
-  | { type: "translation.reset"; text: string; is_final: boolean }
-  | { type: "translation.delta"; delta: string; text: string; is_final: boolean }
-  | { type: "translation.done"; text: string; is_final: boolean }
+  | { type: "transcript.delta"; delta: string; text: string; segment_id?: number }
+  | { type: "transcript.done"; text: string; segment_id?: number }
+  | { type: "translation.reset"; text: string; is_final: boolean; segment_id?: number }
+  | {
+      type: "translation.delta";
+      delta: string;
+      text: string;
+      is_final: boolean;
+      segment_id?: number;
+    }
+  | {
+      type: "translation.done";
+      text: string;
+      is_final: boolean;
+      segment_id?: number;
+      source_text?: string;
+    }
   | { type: "translation.last"; text: string }
   | { type: "warning"; message: string }
   | { type: "error"; message: string };
