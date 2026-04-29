@@ -53,6 +53,7 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const recorderRef = useRef<RecorderHandle | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const transcriptListRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef("");
   const currentSourceTextRef = useRef("");
   const currentSegmentIdRef = useRef<number | null>(null);
@@ -67,6 +68,20 @@ export default function App() {
       void stop();
     };
   }, []);
+
+  useEffect(() => {
+    const list = transcriptListRef.current;
+    if (!list) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      list.scrollTo({
+        top: list.scrollHeight,
+        behavior: "smooth",
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [entries.length, transcript, translation, finalTranslation]);
 
   async function playTts(text: string) {
     if (!text.trim()) {
@@ -282,7 +297,7 @@ export default function App() {
         <Volume2 size={24} className="bannerIcon" />
       </section>
 
-      <section className="transcriptList" aria-label="实时翻译内容">
+      <section ref={transcriptListRef} className="transcriptList" aria-label="实时翻译内容">
         {entries.map((entry) => (
           <article className="translationCard" key={entry.id}>
             <p className="originalText">{entry.original}</p>
