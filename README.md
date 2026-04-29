@@ -1,6 +1,6 @@
 # Vox Bridge 实时语音翻译工具
 
-Vox Bridge 是一个本地运行的 Web 实时语音翻译工具，前端通过麦克风采集音频，转成 24kHz mono PCM16 后走 WebSocket 发给后端；后端使用 OpenAI Realtime API 做流式 ASR，再用 Responses API 做增量翻译，可选调用 Speech API 播放翻译语音。
+Vox Bridge 是一个本地运行的 Web 实时语音翻译工具，前端通过麦克风采集音频，转成 16kHz mono PCM16 后走 WebSocket 发给后端；后端使用 Mistral Voxtral Realtime 做流式 ASR，再用 Mistral Chat Completion 做增量翻译，可选调用 Voxtral TTS 播放翻译语音。
 
 ## 项目结构
 
@@ -14,10 +14,10 @@ vox_bridge/
 │       ├── config.py
 │       ├── languages.py
 │       ├── main.py
-│       ├── openai_realtime.py
 │       ├── schemas.py
 │       ├── translator.py
-│       └── tts.py
+│       ├── tts.py
+│       └── voxtral_realtime.py
 ├── frontend/
 │   ├── .env.example
 │   ├── index.html
@@ -41,15 +41,15 @@ vox_bridge/
 
 ```mermaid
 flowchart LR
-  Mic["浏览器麦克风"] --> Worklet["AudioWorklet\n重采样 24kHz PCM16"]
+  Mic["浏览器麦克风"] --> Worklet["AudioWorklet\n重采样 16kHz PCM16"]
   Worklet --> WS["前端 WebSocket"]
   WS --> FastAPI["FastAPI /ws/translate"]
-  FastAPI --> Realtime["OpenAI Realtime API\n流式 ASR"]
+  FastAPI --> Realtime["Mistral Voxtral Realtime\n流式 ASR"]
   Realtime --> FastAPI
-  FastAPI --> Responses["OpenAI Responses API\n增量上下文翻译"]
+  FastAPI --> Responses["Mistral Chat Completion\n增量上下文翻译"]
   Responses --> FastAPI
   FastAPI --> UI["原文 + 译文字幕"]
-  UI --> TTS["可选 Speech API TTS"]
+  UI --> TTS["可选 Voxtral TTS"]
 ```
 
 ## 如何运行
@@ -67,7 +67,7 @@ cp .env.example .env
 编辑 `backend/.env`，填入：
 
 ```bash
-OPENAI_API_KEY=sk-your-openai-api-key
+MISTRAL_API_KEY=your-mistral-api-key
 ```
 
 启动服务：
@@ -106,17 +106,17 @@ http://127.0.0.1:5173
 
 ## 低延迟策略
 
-- 前端每约 100ms 发送一个 PCM16 音频 chunk。
-- 后端直接转发到 Realtime API 的 `input_audio_buffer.append`，不在本地缓存整句。
-- 后端监听 `conversation.item.input_audio_transcription.delta`，收到增量转写就触发翻译。
+- 前端每约 100ms 发送一个 16kHz PCM16 音频 chunk。
+- 后端把音频 chunk 放入异步队列，直接喂给 Voxtral Realtime 的 `transcribe_stream`，不在本地缓存整句。
+- 后端监听 `TranscriptionStreamTextDelta`，收到增量转写就触发翻译。
 - 翻译请求会携带最近若干条最终字幕上下文，并取消过期的增量翻译，避免字幕落后太多。
 - VAD 只用于最终片段确认；实时字幕不依赖完整句子结束。
 
 ## 可优化点
 
-- 延迟：把前端 `frameSize` 从 2400 调到 1200，可把发送间隔从约 100ms 降到约 50ms，但 WebSocket 消息数和成本会增加。
+- 延迟：把前端 `frameSize` 从 1600 调到 800，可把发送间隔从约 100ms 降到约 50ms，但 WebSocket 消息数和成本会增加。
 - 稳定性：生产环境建议为 WebSocket 增加会话 ID、重连、心跳超时和服务端限流。
 - 翻译质量：可把会议主题、术语表、说话人角色放进 `TranslationContext.build_prompt`。
 - 成本：增量翻译现在会取消过期请求，但高频 ASR delta 仍会增加请求量；可增加 200-400ms debounce 或改成单个 Realtime speech-to-speech 会话。
-- TTS：当前 TTS 在最终译文完成后生成 MP3；若要更低延迟，可改用 Realtime API 的 `response.output_audio.delta` 流式播放。
+- TTS：当前 TTS 在最终译文完成后生成 MP3；若要更低延迟，可改用 Voxtral TTS 的 `pcm` 流式格式。
 - 部署：浏览器麦克风在非 localhost 场景需要 HTTPS；生产建议通过 Nginx/Caddy 统一代理前后端。

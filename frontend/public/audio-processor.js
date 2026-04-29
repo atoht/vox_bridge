@@ -1,15 +1,15 @@
 class PcmWorkletProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    // OpenAI Realtime transcription 当前要求 24kHz mono PCM16。
-    this.targetSampleRate = 24000;
+    // Voxtral Realtime 使用 16kHz mono PCM16（pcm_s16le）。
+    this.targetSampleRate = 16000;
     this.sourceSampleRate = sampleRate;
     this.ratio = this.sourceSampleRate / this.targetSampleRate;
     this.sourcePosition = 0;
     this.leftover = new Float32Array(0);
     this.pending = [];
     this.pendingLength = 0;
-    this.frameSize = 2400; // 约 100ms，延迟和 WebSocket 开销之间的折中。
+    this.frameSize = 1600; // 约 100ms，延迟和 WebSocket 开销之间的折中。
   }
 
   process(inputs) {

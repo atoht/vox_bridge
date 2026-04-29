@@ -1,9 +1,7 @@
-import asyncio
-import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
-import httpx
+from mistralai.client import Mistral
 
 from app.languages import language_name
 from app.schemas import LanguageCode
@@ -51,17 +49,17 @@ class TranslationContext:
 
 
 class StreamingTranslator:
-    """基于 Responses API 的流式翻译客户端。"""
+    """基于 Mistral Chat Completion 的流式翻译客户端。"""
 
     def __init__(self, api_key: str, model: str) -> None:
         self._api_key = api_key
         self._model = model
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=30.0))
+        self._client = Mistral(api_key=api_key)
 
     async def close(self) -> None:
-        """释放 HTTP 连接池。"""
+        """Mistral SDK 当前不需要显式关闭连接，保留接口便于替换。"""
 
-        await self._client.aclose()
+        return None
 
     async def translate_stream(
         self,
@@ -70,37 +68,16 @@ class StreamingTranslator:
         *,
         is_final: bool,
     ) -> AsyncIterator[str]:
-        """以 SSE 方式读取 Responses API 的翻译 delta。"""
+        """以流式方式读取 Mistral 翻译 delta。"""
 
-        payload = {
-            "model": self._model,
-            "input": context.build_prompt(text, is_final),
-            "stream": True,
-            "temperature": 0.2,
-            # 控制字幕长度，避免实时翻译过度展开。
-            "max_output_tokens": 220,
-        }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-
-        async with self._client.stream(
-            "POST",
-            "https://api.openai.com/v1/responses",
-            headers=headers,
-            json=payload,
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = line.removeprefix("data: ").strip()
-                if data == "[DONE]":
-                    break
-                event = json.loads(data)
-                if event.get("type") == "response.output_text.delta":
-                    delta = event.get("delta", "")
-                    if delta:
-                        yield delta
-                await asyncio.sleep(0)
+        stream = await self._client.chat.stream_async(
+            model=self._model,
+            messages=[{"role": "user", "content": context.build_prompt(text, is_final)}],
+            temperature=0.2,
+            max_tokens=220,
+        )
+        async for event in stream:
+            for choice in event.data.choices:
+                content = choice.delta.content
+                if isinstance(content, str) and content:
+                    yield content

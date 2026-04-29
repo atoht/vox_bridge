@@ -4,3 +4,4 @@ websockets==14.1
 httpx==0.28.1
 pydantic-settings==2.7.1
 python-dotenv==1.0.1
+mistralai[realtime]==2.4.3

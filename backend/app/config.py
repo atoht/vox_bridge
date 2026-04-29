@@ -10,11 +10,12 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 class Settings(BaseSettings):
     """应用配置，优先从环境变量读取，其次读取 backend/.env。"""
 
-    openai_api_key: str = ""
-    openai_realtime_transcribe_model: str = "gpt-4o-transcribe"
-    openai_translation_model: str = "gpt-4o-mini"
-    openai_tts_model: str = "gpt-4o-mini-tts"
-    openai_tts_voice: str = "alloy"
+    mistral_api_key: str = ""
+    voxtral_realtime_model: str = "voxtral-mini-transcribe-realtime-2602"
+    voxtral_target_streaming_delay_ms: int = 240
+    mistral_translation_model: str = "mistral-small-latest"
+    mistral_tts_model: str = "voxtral-mini-tts-2603"
+    mistral_tts_voice_id: str = ""
     frontend_origin: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(

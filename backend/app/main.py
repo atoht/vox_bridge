@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from contextlib import suppress
 
@@ -8,10 +9,10 @@ from fastapi.responses import Response
 from pydantic import ValidationError
 
 from app.config import get_settings
-from app.openai_realtime import open_transcription_socket
 from app.schemas import StreamConfig, TtsRequest
 from app.translator import StreamingTranslator, TranslationContext
 from app.tts import TtsClient
+from app.voxtral_realtime import transcribe_voxtral_stream
 
 
 settings = get_settings()
@@ -33,26 +34,26 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def has_usable_openai_key() -> bool:
-    """做基础形态检查，真正有效性仍由 OpenAI 服务端判断。"""
+def has_usable_mistral_key() -> bool:
+    """做基础形态检查，真正有效性仍由 Mistral 服务端判断。"""
 
-    key = settings.openai_api_key.strip()
-    return key.startswith("sk-") and "your-openai-api-key" not in key
+    key = settings.mistral_api_key.strip()
+    return bool(key) and "your-mistral-api-key" not in key
 
 
 @app.post("/api/tts")
 async def tts(req: TtsRequest) -> Response:
     """可选 TTS：把最终译文转成 MP3。"""
 
-    if not has_usable_openai_key():
+    if not has_usable_mistral_key():
         raise HTTPException(
             status_code=500,
-            detail="后端 OPENAI_API_KEY 缺失或仍是示例值，请检查 backend/.env",
+            detail="后端 MISTRAL_API_KEY 缺失或仍是示例值，请检查 backend/.env",
         )
     client = TtsClient(
-        settings.openai_api_key,
-        settings.openai_tts_model,
-        settings.openai_tts_voice,
+        settings.mistral_api_key,
+        settings.mistral_tts_model,
+        settings.mistral_tts_voice_id,
     )
     try:
         audio = await client.synthesize_mp3(req.text)
@@ -66,11 +67,11 @@ async def translate_socket(websocket: WebSocket) -> None:
     """浏览器音频流入口：接收音频、转发 ASR、流式翻译后推回字幕。"""
 
     await websocket.accept()
-    if not has_usable_openai_key():
+    if not has_usable_mistral_key():
         await websocket.send_json(
             {
                 "type": "error",
-                "message": "后端 OPENAI_API_KEY 缺失或仍是示例值，请检查 backend/.env",
+                "message": "后端 MISTRAL_API_KEY 缺失或仍是示例值，请检查 backend/.env",
             }
         )
         await websocket.close(code=1011)
@@ -88,8 +89,8 @@ async def translate_socket(websocket: WebSocket) -> None:
         return
 
     translator = StreamingTranslator(
-        settings.openai_api_key,
-        settings.openai_translation_model,
+        settings.mistral_api_key,
+        settings.mistral_translation_model,
     )
     translation_context = TranslationContext(
         source_language=config.source_language,
@@ -102,6 +103,7 @@ async def translate_socket(websocket: WebSocket) -> None:
     translation_task: asyncio.Task[None] | None = None
     translation_lock = asyncio.Lock()
     send_lock = asyncio.Lock()
+    audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=80)
     stop_event = asyncio.Event()
 
     async def send_event(payload: dict) -> None:
@@ -152,7 +154,7 @@ async def translate_socket(websocket: WebSocket) -> None:
 
         nonlocal last_started_text, translation_task
         text = text.strip()
-        if not text or text == last_started_text:
+        if not text or (not is_final and text == last_started_text):
             return
         async with translation_lock:
             last_started_text = text
@@ -165,102 +167,93 @@ async def translate_socket(websocket: WebSocket) -> None:
             )
 
     try:
-        async with open_transcription_socket(
-            api_key=settings.openai_api_key,
-            model=settings.openai_realtime_transcribe_model,
-            language=config.source_language,
-        ) as realtime:
-            await send_event({"type": "ready"})
+        async def browser_to_voxtral() -> None:
+            """把前端音频 chunk 转发给 Voxtral Realtime 的音频队列。"""
 
-            async def browser_to_openai() -> None:
-                """把前端音频 chunk 转发给 Realtime API。"""
-
-                while not stop_event.is_set():
-                    msg = await websocket.receive_text()
-                    event = json.loads(msg)
-                    event_type = event.get("type")
-                    if event_type == "audio":
-                        await realtime.send(
-                            json.dumps(
-                                {
-                                    "type": "input_audio_buffer.append",
-                                    "audio": event["audio"],
-                                }
-                            )
+            while not stop_event.is_set():
+                msg = await websocket.receive_text()
+                event = json.loads(msg)
+                event_type = event.get("type")
+                if event_type == "audio":
+                    try:
+                        chunk = base64.b64decode(event["audio"])
+                    except Exception:
+                        await send_event(
+                            {"type": "error", "message": "前端音频不是合法 base64"}
                         )
-                    elif event_type == "stop":
-                        stop_event.set()
-                        break
-                    elif event_type == "config":
-                        # 语言切换由前端重开会话实现，避免一个 Realtime 会话中状态混乱。
+                        continue
+                    await audio_queue.put(chunk)
+                elif event_type == "stop":
+                    stop_event.set()
+                    await audio_queue.put(None)
+                    break
+                elif event_type == "config":
+                    # 语言切换由前端重开会话实现，避免一个实时会话中状态混乱。
+                    await send_event(
+                        {
+                            "type": "warning",
+                            "message": "语言已改变，请重新开始录音以应用新配置。",
+                        }
+                    )
+
+        async def voxtral_to_browser() -> None:
+            """处理 Voxtral Realtime 转写事件，并触发翻译。"""
+
+            nonlocal latest_transcript
+            async for event in transcribe_voxtral_stream(
+                api_key=settings.mistral_api_key,
+                model=settings.voxtral_realtime_model,
+                audio_queue=audio_queue,
+                target_streaming_delay_ms=settings.voxtral_target_streaming_delay_ms,
+            ):
+                event_type = event.get("type")
+                if event_type == "ready":
+                    await send_event({"type": "ready"})
+                elif event_type == "transcript.delta":
+                    delta = event.get("delta", "")
+                    latest_transcript += delta
+                    await send_event(
+                        {
+                            "type": "transcript.delta",
+                            "delta": delta,
+                            "text": latest_transcript,
+                        }
+                    )
+                    # 不等句子结束；有 delta 就尽快基于当前上下文翻译。
+                    await schedule_translation(latest_transcript, is_final=False)
+                elif event_type == "transcript.done":
+                    transcript = latest_transcript.strip()
+                    if transcript:
                         await send_event(
                             {
-                                "type": "warning",
-                                "message": "语言已改变，请重新开始录音以应用新配置。",
+                                "type": "transcript.done",
+                                "text": transcript,
                             }
                         )
+                        await schedule_translation(transcript, is_final=True)
+                    latest_transcript = ""
+                elif event_type == "error":
+                    await send_event(
+                        {
+                            "type": "error",
+                            "message": event.get("message", "Voxtral Realtime error"),
+                        }
+                    )
 
-            async def openai_to_browser() -> None:
-                """处理 Realtime API 的转写事件，并触发翻译。"""
-
-                nonlocal latest_transcript
-                async for raw in realtime:
-                    event = json.loads(raw)
-                    event_type = event.get("type")
-                    if event_type == "conversation.item.input_audio_transcription.delta":
-                        latest_transcript += event.get("delta", "")
-                        await send_event(
-                            {
-                                "type": "transcript.delta",
-                                "delta": event.get("delta", ""),
-                                "text": latest_transcript,
-                            }
-                        )
-                        # 不等句子结束；有 delta 就尽快基于当前上下文翻译。
-                        await schedule_translation(latest_transcript, is_final=False)
-                    elif (
-                        event_type
-                        == "conversation.item.input_audio_transcription.completed"
-                    ):
-                        transcript = event.get("transcript", "").strip()
-                        if transcript:
-                            latest_transcript = transcript
-                            await send_event(
-                                {
-                                    "type": "transcript.done",
-                                    "text": latest_transcript,
-                                }
-                            )
-                            await schedule_translation(transcript, is_final=True)
-                        latest_transcript = ""
-                    elif event_type == "input_audio_buffer.speech_started":
-                        await send_event({"type": "speech.started"})
-                    elif event_type == "input_audio_buffer.speech_stopped":
-                        await send_event({"type": "speech.stopped"})
-                    elif event_type == "error":
-                        await send_event(
-                            {
-                                "type": "error",
-                                "message": event.get("error", {}).get(
-                                    "message", "OpenAI Realtime error"
-                                ),
-                            }
-                        )
-
-            tasks = [
-                asyncio.create_task(browser_to_openai()),
-                asyncio.create_task(openai_to_browser()),
-            ]
-            done, pending = await asyncio.wait(
-                tasks,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in done:
-                task.result()
-            for task in pending:
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+        tasks = [
+            asyncio.create_task(browser_to_voxtral()),
+            asyncio.create_task(voxtral_to_browser()),
+        ]
+        done, pending = await asyncio.wait(
+            tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            task.result()
+        for task in pending:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
     except WebSocketDisconnect:
         pass
     except Exception as exc:
@@ -268,6 +261,8 @@ async def translate_socket(websocket: WebSocket) -> None:
             await send_event({"type": "error", "message": str(exc)})
     finally:
         stop_event.set()
+        with suppress(Exception):
+            await audio_queue.put(None)
         if translation_task and not translation_task.done():
             translation_task.cancel()
             with suppress(asyncio.CancelledError):
