@@ -15,6 +15,8 @@ const languageLabels: Record<LanguageCode, string> = {
 const presets: Array<{ label: string; source: LanguageCode; target: LanguageCode }> = [
   { label: "中 → 日", source: "zh", target: "ja" },
   { label: "日 → 中", source: "ja", target: "zh" },
+  { label: "中 → 英", source: "zh", target: "en" },
+  { label: "英 → 中", source: "en", target: "zh" },
   { label: "英 → 日", source: "en", target: "ja" },
   { label: "日 → 英", source: "ja", target: "en" },
 ];
