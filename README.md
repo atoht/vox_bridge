@@ -54,7 +54,7 @@ flowchart LR
 
 ## 如何运行
 
-### 1. 启动后端
+### 1. 首次安装依赖
 
 ```bash
 cd backend
@@ -67,21 +67,22 @@ cp .env.example .env
 编辑 `backend/.env`，填入：
 
 ```bash
-MISTRAL_API_KEY=your-mistral-api-key
+MISTRAL_API_KEY=your-real-mistral-api-key
 ```
 
-启动服务：
-
-```bash
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-### 2. 启动前端
+安装前端依赖：
 
 ```bash
 cd frontend
 npm install
 cp .env.example .env
+```
+
+### 2. 一条命令启动前后端
+
+在项目根目录运行：
+
+```bash
 npm run dev
 ```
 
