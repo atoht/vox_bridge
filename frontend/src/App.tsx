@@ -83,7 +83,11 @@ export default function App() {
     await audio.play();
   }
 
-  function rememberFinalTranslation(translated: string, sourceText?: string) {
+  function rememberFinalTranslation(
+    translated: string,
+    sourceText?: string,
+    clearLive = true,
+  ) {
     const original = sourceText || currentSourceTextRef.current || transcriptRef.current;
     if (!original.trim() || !translated.trim()) {
       return;
@@ -97,12 +101,14 @@ export default function App() {
         translated,
       },
     ]);
-    currentSourceTextRef.current = "";
-    currentSegmentIdRef.current = null;
-    transcriptRef.current = "";
-    setTranscript("");
-    setTranslation("");
-    setFinalTranslation("");
+    if (clearLive) {
+      currentSourceTextRef.current = "";
+      currentSegmentIdRef.current = null;
+      transcriptRef.current = "";
+      setTranscript("");
+      setTranslation("");
+      setFinalTranslation("");
+    }
   }
 
   function handleServerEvent(event: ServerEvent) {
@@ -137,18 +143,20 @@ export default function App() {
       if (!event.text.trim()) {
         return;
       }
-      if (event.segment_id !== undefined && event.segment_id !== currentSegmentIdRef.current) {
-        return;
-      }
-      setTranslation(event.text);
       if (event.is_final) {
-        setFinalTranslation(event.text);
-        rememberFinalTranslation(event.text, event.source_text);
+        const isCurrentSegment =
+          event.segment_id === undefined || event.segment_id === currentSegmentIdRef.current;
+        rememberFinalTranslation(event.text, event.source_text, isCurrentSegment);
         if (enableTts) {
           void playTts(event.text).catch((err: unknown) => {
             setError(err instanceof Error ? err.message : String(err));
           });
         }
+      } else if (
+        event.segment_id === undefined ||
+        event.segment_id === currentSegmentIdRef.current
+      ) {
+        setTranslation(event.text);
       }
     } else if (event.type === "warning") {
       setStatus(event.message);

@@ -103,8 +103,11 @@ async def translate_socket(websocket: WebSocket) -> None:
     last_translation_started_at = 0.0
     last_segment_at = asyncio.get_running_loop().time()
     committed_transcript_len = 0
-    translation_task: asyncio.Task[None] | None = None
+    preview_translation_task: asyncio.Task[None] | None = None
+    silence_finalize_task: asyncio.Task[None] | None = None
+    final_translation_tasks: set[asyncio.Task[None]] = set()
     translation_lock = asyncio.Lock()
+    segment_lock = asyncio.Lock()
     send_lock = asyncio.Lock()
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=80)
     stop_event = asyncio.Event()
@@ -180,32 +183,80 @@ async def translate_socket(websocket: WebSocket) -> None:
                 }
             )
 
-    async def schedule_translation(
+    async def schedule_preview_translation(
         text: str,
         *,
-        is_final: bool,
         segment_id: int,
     ) -> None:
-        """增量转写频繁到达时做轻量节流，并取消过期翻译。"""
+        """调度当前片段的低延迟预览翻译，只取消旧预览，不取消最终翻译。"""
 
-        nonlocal last_started_text, last_translation_started_at, translation_task
+        nonlocal last_started_text, last_translation_started_at, preview_translation_task
         text = text.strip()
-        if not text or (not is_final and text == last_started_text):
+        if not text or text == last_started_text:
             return
         async with translation_lock:
             now = asyncio.get_running_loop().time()
-            # 增量转写可能几十毫秒一次；过于频繁会让翻译任务不断取消，导致字幕闪空。
-            if not is_final and now - last_translation_started_at < 0.45:
+            # 模仿同传应用的节奏：频繁刷新，但不对每个 token 都请求翻译。
+            if now - last_translation_started_at < 0.28:
                 return
             last_translation_started_at = now
             last_started_text = text
-            if translation_task and not translation_task.done():
-                translation_task.cancel()
+            if preview_translation_task and not preview_translation_task.done():
+                preview_translation_task.cancel()
                 with suppress(asyncio.CancelledError):
-                    await translation_task
-            translation_task = asyncio.create_task(
-                push_translation(text, is_final=is_final, segment_id=segment_id)
+                    await preview_translation_task
+            preview_translation_task = asyncio.create_task(
+                push_translation(text, is_final=False, segment_id=segment_id)
             )
+
+    async def schedule_final_translation(text: str, *, segment_id: int) -> None:
+        """调度最终片段翻译；最终翻译不能被后续实时片段取消。"""
+
+        nonlocal preview_translation_task
+        text = text.strip()
+        if not text:
+            return
+        async with translation_lock:
+            if preview_translation_task and not preview_translation_task.done():
+                preview_translation_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await preview_translation_task
+            task = asyncio.create_task(
+                push_translation(text, is_final=True, segment_id=segment_id)
+            )
+            final_translation_tasks.add(task)
+            task.add_done_callback(final_translation_tasks.discard)
+
+    async def finalize_current_segment() -> None:
+        """把当前未提交转写固化为一个翻译卡片。"""
+
+        nonlocal committed_transcript_len, last_segment_at
+        async with segment_lock:
+            transcript = latest_transcript[committed_transcript_len:].strip()
+            if not transcript:
+                return
+            segment_id = committed_transcript_len
+            committed_transcript_len = len(latest_transcript)
+            last_segment_at = asyncio.get_running_loop().time()
+
+        await send_event(
+            {
+                "type": "transcript.done",
+                "segment_id": segment_id,
+                "text": transcript,
+            }
+        )
+        await schedule_final_translation(transcript, segment_id=segment_id)
+
+    async def finalize_after_silence(observed_len: int) -> None:
+        """短暂停顿后主动切卡片，避免一直堆在同一个 live card。"""
+
+        try:
+            await asyncio.sleep(1.05)
+            if not stop_event.is_set() and len(latest_transcript) == observed_len:
+                await finalize_current_segment()
+        except asyncio.CancelledError:
+            raise
 
     try:
         async def browser_to_voxtral() -> None:
@@ -240,7 +291,7 @@ async def translate_socket(websocket: WebSocket) -> None:
         async def voxtral_to_browser() -> None:
             """处理 Voxtral Realtime 转写事件，并触发翻译。"""
 
-            nonlocal committed_transcript_len, last_segment_at, latest_transcript
+            nonlocal committed_transcript_len, latest_transcript, silence_finalize_task
             async for event in transcribe_voxtral_stream(
                 api_key=settings.mistral_api_key,
                 model=settings.voxtral_realtime_model,
@@ -264,37 +315,23 @@ async def translate_socket(websocket: WebSocket) -> None:
                         }
                     )
                     # 不等句子结束；只翻译当前未提交片段，避免整段历史反复覆盖。
-                    await schedule_translation(
+                    await schedule_preview_translation(
                         current_segment,
-                        is_final=False,
                         segment_id=segment_id,
                     )
+                    if silence_finalize_task and not silence_finalize_task.done():
+                        silence_finalize_task.cancel()
+                    silence_finalize_task = asyncio.create_task(
+                        finalize_after_silence(len(latest_transcript))
+                    )
                     if should_finalize_segment(current_segment):
-                        committed_transcript_len = len(latest_transcript)
-                        last_segment_at = asyncio.get_running_loop().time()
-                        await schedule_translation(
-                            current_segment,
-                            is_final=True,
-                            segment_id=segment_id,
-                        )
+                        if silence_finalize_task and not silence_finalize_task.done():
+                            silence_finalize_task.cancel()
+                        await finalize_current_segment()
                 elif event_type == "transcript.done":
-                    transcript = latest_transcript[committed_transcript_len:].strip()
-                    if transcript:
-                        segment_id = committed_transcript_len
-                        await send_event(
-                            {
-                                "type": "transcript.done",
-                                "segment_id": segment_id,
-                                "text": transcript,
-                            }
-                        )
-                        committed_transcript_len = len(latest_transcript)
-                        last_segment_at = asyncio.get_running_loop().time()
-                        await schedule_translation(
-                            transcript,
-                            is_final=True,
-                            segment_id=segment_id,
-                        )
+                    if silence_finalize_task and not silence_finalize_task.done():
+                        silence_finalize_task.cancel()
+                    await finalize_current_segment()
                     latest_transcript = ""
                     committed_transcript_len = 0
                 elif event_type == "error":
@@ -328,10 +365,18 @@ async def translate_socket(websocket: WebSocket) -> None:
         stop_event.set()
         with suppress(Exception):
             await audio_queue.put(None)
-        if translation_task and not translation_task.done():
-            translation_task.cancel()
+        if silence_finalize_task and not silence_finalize_task.done():
+            silence_finalize_task.cancel()
             with suppress(asyncio.CancelledError):
-                await translation_task
+                await silence_finalize_task
+        if preview_translation_task and not preview_translation_task.done():
+            preview_translation_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await preview_translation_task
+        for task in list(final_translation_tasks):
+            if not task.done():
+                with suppress(asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(task, timeout=2.0)
         if latest_translation:
             with suppress(Exception):
                 await send_event(
