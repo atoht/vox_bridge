@@ -100,6 +100,7 @@ async def translate_socket(websocket: WebSocket) -> None:
     latest_transcript = ""
     latest_translation = ""
     last_started_text = ""
+    last_translation_started_at = 0.0
     translation_task: asyncio.Task[None] | None = None
     translation_lock = asyncio.Lock()
     send_lock = asyncio.Lock()
@@ -117,46 +118,62 @@ async def translate_socket(websocket: WebSocket) -> None:
 
         nonlocal latest_translation
         accumulated = ""
-        await send_event(
-            {
-                "type": "translation.reset",
-                "text": text,
-                "is_final": is_final,
-            }
-        )
-        async for delta in translator.translate_stream(
-            translation_context,
-            text,
-            is_final=is_final,
-        ):
-            accumulated += delta
-            latest_translation = accumulated
+        try:
             await send_event(
                 {
-                    "type": "translation.delta",
-                    "delta": delta,
-                    "text": accumulated,
+                    "type": "translation.reset",
+                    "text": text,
                     "is_final": is_final,
                 }
             )
-        if is_final:
-            translation_context.remember(text, accumulated)
-        await send_event(
-            {
-                "type": "translation.done",
-                "text": accumulated,
-                "is_final": is_final,
-            }
-        )
+            async for delta in translator.translate_stream(
+                translation_context,
+                text,
+                is_final=is_final,
+            ):
+                accumulated += delta
+                latest_translation = accumulated
+                await send_event(
+                    {
+                        "type": "translation.delta",
+                        "delta": delta,
+                        "text": accumulated,
+                        "is_final": is_final,
+                    }
+                )
+            if accumulated.strip():
+                if is_final:
+                    translation_context.remember(text, accumulated)
+                await send_event(
+                    {
+                        "type": "translation.done",
+                        "text": accumulated,
+                        "is_final": is_final,
+                    }
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await send_event(
+                {
+                    "type": "warning",
+                    "message": f"翻译暂时不可用，保留上一条字幕：{exc}",
+                }
+            )
 
     async def schedule_translation(text: str, *, is_final: bool) -> None:
         """增量转写频繁到达时做轻量节流，并取消过期翻译。"""
 
-        nonlocal last_started_text, translation_task
+        nonlocal last_started_text, last_translation_started_at, translation_task
         text = text.strip()
         if not text or (not is_final and text == last_started_text):
             return
         async with translation_lock:
+            now = asyncio.get_running_loop().time()
+            # 增量转写可能几十毫秒一次；过于频繁会让翻译任务不断取消，导致字幕闪空。
+            if not is_final and now - last_translation_started_at < 0.45:
+                return
+            last_translation_started_at = now
             last_started_text = text
             if translation_task and not translation_task.done():
                 translation_task.cancel()

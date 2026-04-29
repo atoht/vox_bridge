@@ -67,10 +67,14 @@ export default function App() {
     } else if (event.type === "transcript.delta" || event.type === "transcript.done") {
       setTranscript(event.text);
     } else if (event.type === "translation.reset") {
-      setTranslation("");
+      // 新一轮翻译启动时不立刻清空旧字幕，避免后端取消旧流或网络抖动时译文闪空。
+      return;
     } else if (event.type === "translation.delta") {
       setTranslation(event.text);
     } else if (event.type === "translation.done") {
+      if (!event.text.trim()) {
+        return;
+      }
       setTranslation(event.text);
       if (event.is_final) {
         setFinalTranslation(event.text);
