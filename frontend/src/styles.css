@@ -1,6 +1,6 @@
 :root {
-  color: #f4f7fb;
-  background: #101418;
+  color: #f7f7fb;
+  background: #1f2024;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -16,171 +16,331 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: #1f2024;
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
+}
+
+button {
+  border: 0;
 }
 
 .appShell {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto 1fr auto;
   min-height: 100vh;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 34%),
-    #101418;
+  max-width: 980px;
+  margin: 0 auto;
+  background: #1f2024;
 }
 
-.toolbar {
-  display: flex;
+.topBar {
+  display: grid;
+  grid-template-columns: 48px minmax(110px, 1fr) 58px minmax(110px, 1fr) 48px;
   align-items: center;
-  gap: 12px;
-  padding: 18px 22px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.11);
-  background: rgba(16, 20, 24, 0.9);
+  gap: 10px;
+  min-height: 84px;
+  padding: 18px 24px 12px;
 }
 
-.presetGroup {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-}
-
-.preset,
-.recordButton,
-.toggle {
+.iconButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 38px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 8px;
-  color: #f4f7fb;
-  background: rgba(255, 255, 255, 0.06);
+  width: 46px;
+  height: 46px;
+  color: #f7f7fb;
+  background: transparent;
 }
 
-.preset {
-  min-width: 76px;
-  padding: 0 13px;
+.languageSelector {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+  color: #f5f5f7;
+  font-size: clamp(22px, 4.5vw, 36px);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.languageSelector.target {
+  color: #765ef0;
+}
+
+.swapBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 58px;
+  margin: 0 auto;
+  color: #f4f0ff;
+  border: 2px solid #34363d;
+  border-radius: 999px;
+  background: #24262b;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.directionSelectLabel {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.directionSelectLabel select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
   cursor: pointer;
 }
 
-.preset.active {
-  color: #0c1116;
-  background: #8fd7c7;
-  border-color: #8fd7c7;
-}
-
-.preset:disabled {
+.directionSelectLabel select:disabled {
   cursor: not-allowed;
-  opacity: 0.62;
 }
 
-.toggle {
-  margin-left: auto;
-  padding: 0 12px;
-  cursor: pointer;
+.promptBanner {
+  position: relative;
+  margin: 0 24px 22px;
+  padding: 28px 72px 28px 40px;
+  color: #ffffff;
+  background: #6650e8;
+  border-radius: 0 0 22px 22px;
+  font-size: clamp(26px, 4vw, 42px);
+  line-height: 1.22;
+  overflow-wrap: anywhere;
 }
 
-.toggle input {
-  accent-color: #8fd7c7;
+.promptBanner p {
+  margin: 0;
 }
 
-.recordButton {
-  width: 98px;
-  cursor: pointer;
-  background: #2f80ed;
-  border-color: #2f80ed;
+.bannerIcon {
+  position: absolute;
+  right: 34px;
+  top: 50%;
+  color: #ffffff;
+  transform: translateY(-50%);
 }
 
-.recordButton.stop {
-  background: #d94f4f;
-  border-color: #d94f4f;
-}
-
-.subtitleStage {
+.transcriptList {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 18px;
-  width: min(1080px, calc(100vw - 32px));
-  margin: 0 auto;
-  padding: 38px 0;
+  gap: 48px;
+  padding: 26px 24px 34px;
+  overflow-y: auto;
 }
 
-.languageLine {
-  color: #9fb0c2;
-  font-size: 15px;
-}
-
-.subtitle {
+.translationCard,
+.emptyCard {
   width: 100%;
-  min-height: 94px;
-  padding: 22px 26px;
-  border-left: 4px solid transparent;
-  border-radius: 8px;
-  line-height: 1.42;
-  overflow-wrap: anywhere;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.23);
+  border-radius: 24px;
+  background: #303238;
 }
 
-.subtitle.original {
-  color: #d6e2ef;
-  background: rgba(255, 255, 255, 0.08);
-  border-left-color: #77a7ff;
-  font-size: clamp(24px, 3.4vw, 46px);
+.translationCard {
+  padding: 40px;
 }
 
-.subtitle.translated {
-  color: #ffffff;
-  background: rgba(143, 215, 199, 0.13);
-  border-left-color: #8fd7c7;
-  font-size: clamp(28px, 4vw, 54px);
-  font-weight: 700;
+.translationCard.liveCard {
+  outline: 2px solid rgba(117, 94, 240, 0.36);
 }
 
-.statusBar {
+.emptyCard {
   display: flex;
-  gap: 14px;
-  justify-content: space-between;
-  padding: 14px 22px;
-  color: #9fb0c2;
-  border-top: 1px solid rgba(255, 255, 255, 0.11);
+  flex-direction: column;
+  gap: 18px;
+  min-height: 210px;
+  padding: 42px 40px;
+  color: #a0a3ad;
+  font-size: clamp(24px, 4vw, 38px);
+  line-height: 1.3;
+}
+
+.emptyCard p {
+  margin: 0;
+}
+
+.originalText,
+.translatedText {
+  margin: 0;
+  line-height: 1.34;
+  overflow-wrap: anywhere;
+}
+
+.originalText {
+  color: #9ca0aa;
+  font-size: clamp(24px, 4vw, 38px);
+  font-weight: 450;
+}
+
+.translatedRow {
+  display: grid;
+  grid-template-columns: 1fr 38px;
+  align-items: center;
+  gap: 22px;
+  margin-top: 22px;
+}
+
+.translatedText {
+  color: #ffffff;
+  font-size: clamp(28px, 4.7vw, 44px);
+  font-weight: 750;
+}
+
+.soundButton,
+.inlineSound {
+  color: #765ef0;
+}
+
+.soundButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bottomDock {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  grid-template-rows: 4px 116px auto;
+  align-items: center;
+  gap: 0 18px;
+  padding: 0 24px 22px;
+  background: #1f2024;
+}
+
+.dockLine {
+  grid-column: 1 / -1;
+  width: calc(100% + 48px);
+  height: 4px;
+  margin-left: -24px;
+  background: #765ef0;
+}
+
+.primaryControl {
+  grid-column: 2;
+  grid-row: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 86px;
+  height: 86px;
+  color: #765ef0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.primaryControl svg {
+  fill: currentColor;
+}
+
+.primaryControl.recording {
+  color: #ff6b6b;
+}
+
+.ttsSwitch {
+  grid-column: 1;
+  grid-row: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 44px;
+  color: #c7c9d1;
+  font-size: 16px;
+}
+
+.ttsSwitch input {
+  width: 18px;
+  height: 18px;
+  accent-color: #765ef0;
+}
+
+.statusText {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  color: #9ca0aa;
+  font-size: 14px;
+  text-align: center;
 }
 
 .errorText {
   color: #ffb7b7;
-  text-align: right;
 }
 
 @media (max-width: 720px) {
-  .toolbar {
-    align-items: stretch;
-    flex-direction: column;
+  .appShell {
+    max-width: none;
   }
 
-  .toggle {
-    margin-left: 0;
-    width: fit-content;
+  .topBar {
+    grid-template-columns: 38px minmax(86px, 1fr) 50px minmax(86px, 1fr) 38px;
+    gap: 6px;
+    min-height: 76px;
+    padding: 14px 16px 10px;
   }
 
-  .recordButton {
-    width: 100%;
+  .iconButton {
+    width: 38px;
+    height: 38px;
   }
 
-  .subtitleStage {
-    width: min(100vw - 22px, 1080px);
+  .swapBadge {
+    width: 50px;
+    height: 50px;
+    font-size: 30px;
   }
 
-  .subtitle {
-    min-height: 82px;
-    padding: 18px;
+  .promptBanner {
+    margin: 0 24px 22px;
+    padding: 26px 62px 26px 40px;
   }
 
-  .statusBar {
-    flex-direction: column;
+  .transcriptList {
+    gap: 48px;
+    padding: 26px 24px 34px;
+  }
+
+  .translationCard {
+    padding: 40px;
+  }
+}
+
+@media (max-width: 460px) {
+  .promptBanner,
+  .translationCard,
+  .emptyCard {
+    border-radius: 18px;
+  }
+
+  .promptBanner {
+    padding: 22px 50px 22px 24px;
+  }
+
+  .translationCard,
+  .emptyCard {
+    padding: 28px 24px;
+  }
+
+  .translatedRow {
+    grid-template-columns: 1fr 30px;
   }
 }

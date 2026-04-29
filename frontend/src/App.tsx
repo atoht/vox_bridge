@@ -1,4 +1,4 @@
-import { Mic, Square, Volume2 } from "lucide-react";
+import { ChevronDown, FileClock, Menu, Play, Square, Volume2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { buildWsUrl, requestTts } from "./api";
@@ -6,10 +6,22 @@ import { startPcmRecorder, type RecorderHandle } from "./audio";
 import type { LanguageCode, ServerEvent, StreamConfig } from "./types";
 import "./styles.css";
 
+type TranslationEntry = {
+  id: number;
+  original: string;
+  translated: string;
+};
+
 const languageLabels: Record<LanguageCode, string> = {
-  zh: "中文",
+  zh: "简体中文",
   ja: "日本語",
   en: "English",
+};
+
+const languageFlags: Record<LanguageCode, string> = {
+  zh: "🇨🇳",
+  ja: "🇯🇵",
+  en: "🇺🇸",
 };
 
 const presets: Array<{ label: string; source: LanguageCode; target: LanguageCode }> = [
@@ -21,20 +33,33 @@ const presets: Array<{ label: string; source: LanguageCode; target: LanguageCode
   { label: "日 → 英", source: "ja", target: "en" },
 ];
 
+function compactLanguageName(code: LanguageCode) {
+  const label = languageLabels[code];
+  return label.length > 5 ? `${label.slice(0, 5)}...` : label;
+}
+
 export default function App() {
   const [sourceLanguage, setSourceLanguage] = useState<LanguageCode>("zh");
   const [targetLanguage, setTargetLanguage] = useState<LanguageCode>("ja");
   const [enableTts, setEnableTts] = useState(false);
-  const [status, setStatus] = useState("未连接");
+  const [status, setStatus] = useState("已停止");
   const [transcript, setTranscript] = useState("");
   const [translation, setTranslation] = useState("");
   const [finalTranslation, setFinalTranslation] = useState("");
+  const [entries, setEntries] = useState<TranslationEntry[]>([]);
   const [error, setError] = useState("");
   const [isRecording, setIsRecording] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const recorderRef = useRef<RecorderHandle | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const transcriptRef = useRef("");
+  const currentSourceTextRef = useRef("");
+  const entryIdRef = useRef(1);
+
+  const directionValue = `${sourceLanguage}-${targetLanguage}`;
+  const liveTranslatedText = translation || finalTranslation;
+  const hasLiveCard = Boolean(transcript.trim() || liveTranslatedText.trim());
 
   useEffect(() => {
     return () => {
@@ -57,18 +82,39 @@ export default function App() {
     await audio.play();
   }
 
+  function rememberFinalTranslation(translated: string) {
+    const original = currentSourceTextRef.current || transcriptRef.current;
+    if (!original.trim() || !translated.trim()) {
+      return;
+    }
+
+    setEntries((prev) => [
+      ...prev,
+      {
+        id: entryIdRef.current++,
+        original,
+        translated,
+      },
+    ]);
+    currentSourceTextRef.current = "";
+    transcriptRef.current = "";
+    setTranscript("");
+    setTranslation("");
+    setFinalTranslation("");
+  }
+
   function handleServerEvent(event: ServerEvent) {
     if (event.type === "ready") {
-      setStatus("已连接，正在监听");
+      setStatus("正在实时翻译");
     } else if (event.type === "speech.started") {
-      setStatus("检测到语音");
+      setStatus("正在聆听");
     } else if (event.type === "speech.stopped") {
-      setStatus("语音片段处理中");
+      setStatus("正在生成译文");
     } else if (event.type === "transcript.delta" || event.type === "transcript.done") {
+      transcriptRef.current = event.text;
       setTranscript(event.text);
     } else if (event.type === "translation.reset") {
-      // 新一轮翻译启动时不立刻清空旧字幕，避免后端取消旧流或网络抖动时译文闪空。
-      return;
+      currentSourceTextRef.current = event.text;
     } else if (event.type === "translation.delta") {
       setTranslation(event.text);
     } else if (event.type === "translation.done") {
@@ -78,6 +124,7 @@ export default function App() {
       setTranslation(event.text);
       if (event.is_final) {
         setFinalTranslation(event.text);
+        rememberFinalTranslation(event.text);
         if (enableTts) {
           void playTts(event.text).catch((err: unknown) => {
             setError(err instanceof Error ? err.message : String(err));
@@ -97,7 +144,10 @@ export default function App() {
     setTranscript("");
     setTranslation("");
     setFinalTranslation("");
-    setStatus("正在连接后端");
+    setEntries([]);
+    transcriptRef.current = "";
+    currentSourceTextRef.current = "";
+    setStatus("正在连接");
 
     const ws = new WebSocket(buildWsUrl());
     wsRef.current = ws;
@@ -150,43 +200,106 @@ export default function App() {
     setStatus("已停止");
   }
 
-  function applyPreset(source: LanguageCode, target: LanguageCode) {
+  function applyDirection(value: string) {
+    const [source, target] = value.split("-") as [LanguageCode, LanguageCode];
     setSourceLanguage(source);
     setTargetLanguage(target);
   }
 
   return (
     <main className="appShell">
-      <section className="toolbar" aria-label="控制栏">
-        <div className="presetGroup" role="group" aria-label="翻译方向">
-          {presets.map((preset) => (
-            <button
-              key={preset.label}
-              className={
-                sourceLanguage === preset.source && targetLanguage === preset.target
-                  ? "preset active"
-                  : "preset"
-              }
-              disabled={isRecording}
-              onClick={() => applyPreset(preset.source, preset.target)}
-            >
-              {preset.label}
-            </button>
-          ))}
+      <header className="topBar" aria-label="语言控制栏">
+        <button className="iconButton" type="button" aria-label="菜单">
+          <Menu size={25} />
+        </button>
+
+        <div className="languageSelector">
+          <span>{languageFlags[sourceLanguage]}</span>
+          <span>{compactLanguageName(sourceLanguage)}</span>
+          <ChevronDown size={16} />
         </div>
 
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={enableTts}
-            onChange={(event) => setEnableTts(event.target.checked)}
-          />
-          <Volume2 size={17} aria-hidden="true" />
-          TTS
+        <div className="swapBadge" aria-hidden="true">
+          ⇆
+        </div>
+
+        <label className="directionSelectLabel">
+          <span className="languageSelector target">
+            <span>{languageFlags[targetLanguage]}</span>
+            <span>{compactLanguageName(targetLanguage)}</span>
+            <ChevronDown size={16} />
+          </span>
+          <select
+            aria-label="翻译方向"
+            value={directionValue}
+            disabled={isRecording}
+            onChange={(event) => applyDirection(event.target.value)}
+          >
+            {presets.map((preset) => (
+              <option key={preset.label} value={`${preset.source}-${preset.target}`}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
         </label>
 
+        <button className="iconButton" type="button" aria-label="历史">
+          <FileClock size={25} />
+        </button>
+      </header>
+
+      <section className="promptBanner" aria-label="开始提示">
+        <p>👇 下のボタンをクリックしてください</p>
+        <p>▶️ 話し始めると、Vox Bridge が自動的に言語を認識して翻訳します</p>
+        <Volume2 size={24} className="bannerIcon" />
+      </section>
+
+      <section className="transcriptList" aria-label="实时翻译内容">
+        {entries.map((entry) => (
+          <article className="translationCard" key={entry.id}>
+            <p className="originalText">{entry.original}</p>
+            <div className="translatedRow">
+              <p className="translatedText">{entry.translated}</p>
+              <button
+                className="soundButton"
+                type="button"
+                aria-label="播放译文"
+                onClick={() => {
+                  void playTts(entry.translated).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : String(err));
+                  });
+                }}
+              >
+                <Volume2 size={22} />
+              </button>
+            </div>
+          </article>
+        ))}
+
+        {hasLiveCard && (
+          <article className="translationCard liveCard">
+            <p className="originalText">{transcript || "正在识别..."}</p>
+            <div className="translatedRow">
+              <p className="translatedText">{liveTranslatedText || "正在翻译..."}</p>
+              <Volume2 size={22} className="inlineSound" />
+            </div>
+          </article>
+        )}
+
+        {!entries.length && !hasLiveCard && (
+          <article className="emptyCard">
+            <p>点击下方按钮开始实时翻译</p>
+            <p>{languageFlags[sourceLanguage]} {languageLabels[sourceLanguage]} → {languageFlags[targetLanguage]} {languageLabels[targetLanguage]}</p>
+          </article>
+        )}
+      </section>
+
+      <footer className="bottomDock">
+        <div className="dockLine" />
         <button
-          className={isRecording ? "recordButton stop" : "recordButton"}
+          className={isRecording ? "primaryControl recording" : "primaryControl"}
+          type="button"
+          aria-label={isRecording ? "停止" : "开始"}
           onClick={() => {
             void (isRecording ? stop() : start()).catch((err: unknown) => {
               setError(err instanceof Error ? err.message : String(err));
@@ -194,22 +307,21 @@ export default function App() {
             });
           }}
         >
-          {isRecording ? <Square size={18} /> : <Mic size={18} />}
-          {isRecording ? "停止" : "开始"}
+          {isRecording ? <Square size={28} /> : <Play size={34} />}
         </button>
-      </section>
-
-      <section className="subtitleStage" aria-label="实时字幕">
-        <div className="languageLine">
-          {languageLabels[sourceLanguage]} → {languageLabels[targetLanguage]}
+        <label className="ttsSwitch">
+          <input
+            type="checkbox"
+            checked={enableTts}
+            onChange={(event) => setEnableTts(event.target.checked)}
+          />
+          <Volume2 size={18} />
+          TTS
+        </label>
+        <div className="statusText">
+          <span>{status}</span>
+          {error && <span className="errorText">{error}</span>}
         </div>
-        <div className="subtitle original">{transcript || "等待麦克风输入..."}</div>
-        <div className="subtitle translated">{translation || finalTranslation || "译文会实时显示在这里"}</div>
-      </section>
-
-      <footer className="statusBar">
-        <span>{status}</span>
-        {error && <span className="errorText">{error}</span>}
       </footer>
     </main>
   );
